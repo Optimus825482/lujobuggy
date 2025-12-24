@@ -152,6 +152,21 @@ export const geofenceEvents = pgTable("geofence_events", {
   timestamp: timestamp("timestamp").notNull().defaultNow(),
 });
 
+// Stop Visits Table - Araçların duraklarda kalma süreleri
+export const stopVisits = pgTable("stop_visits", {
+  id: serial("id").primaryKey(),
+  vehicleId: integer("vehicle_id")
+    .notNull()
+    .references(() => vehicles.id),
+  stopId: integer("stop_id")
+    .notNull()
+    .references(() => stops.id),
+  enterTime: timestamp("enter_time").notNull().defaultNow(),
+  exitTime: timestamp("exit_time"),
+  duration: integer("duration"), // saniye
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Vehicle Positions Table (GPS History)
 export const vehiclePositions = pgTable("vehicle_positions", {
   id: serial("id").primaryKey(),
@@ -283,6 +298,7 @@ export const vehiclesRelations = relations(vehicles, ({ one, many }) => ({
   geofenceEvents: many(geofenceEvents),
   positions: many(vehiclePositions),
   trips: many(trips),
+  stopVisits: many(stopVisits),
 }));
 
 export const stopsRelations = relations(stops, ({ many }) => ({
@@ -292,6 +308,7 @@ export const stopsRelations = relations(stops, ({ many }) => ({
   geofenceEvents: many(geofenceEvents),
   startTrips: many(trips, { relationName: "startStop" }),
   endTrips: many(trips, { relationName: "endStop" }),
+  stopVisits: many(stopVisits),
 }));
 
 export const callsRelations = relations(calls, ({ one }) => ({
@@ -327,6 +344,14 @@ export const geofenceEventsRelations = relations(geofenceEvents, ({ one }) => ({
     references: [vehicles.id],
   }),
   stop: one(stops, { fields: [geofenceEvents.stopId], references: [stops.id] }),
+}));
+
+export const stopVisitsRelations = relations(stopVisits, ({ one }) => ({
+  vehicle: one(vehicles, {
+    fields: [stopVisits.vehicleId],
+    references: [vehicles.id],
+  }),
+  stop: one(stops, { fields: [stopVisits.stopId], references: [stops.id] }),
 }));
 
 export const vehiclePositionsRelations = relations(
@@ -388,6 +413,8 @@ export type NewCall = typeof calls.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type GeofenceEvent = typeof geofenceEvents.$inferSelect;
+export type StopVisit = typeof stopVisits.$inferSelect;
+export type NewStopVisit = typeof stopVisits.$inferInsert;
 export type DailyStat = typeof dailyStats.$inferSelect;
 export type SystemSetting = typeof systemSettings.$inferSelect;
 export type Trip = typeof trips.$inferSelect;

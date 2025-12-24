@@ -22,6 +22,7 @@ import {
   endTrip,
   updateTripStats,
 } from "$lib/server/trip-detection";
+import { recordStopEnter, recordStopExit } from "$lib/server/stop-visits";
 
 const TRACCAR_URL = env.TRACCAR_URL || "https://traccar.optimistdemo.cloud";
 const TRACCAR_USER = env.TRACCAR_USER || "admin";
@@ -183,6 +184,45 @@ export const GET: RequestHandler = async ({ request }) => {
                       nearestStopDistance = distance;
                     }
                   }
+
+                  // Durak giriş/çıkış kontrolü (Stop Visits)
+                  const previousStopId = vehicle.lastGeofenceStopId;
+
+                  // Durağa giriş: önceki durak yoktu veya farklıydı, şimdi bir durağa girdik
+                  if (nearestStopId && nearestStopId !== previousStopId) {
+                    // Önceki duraktan çıkış kaydı
+                    if (previousStopId) {
+                      await recordStopExit(vehicle.id, previousStopId);
+                    }
+                    // Yeni durağa giriş kaydı
+                    await recordStopEnter(vehicle.id, nearestStopId);
+
+                    sendSSE("stopVisit", {
+                      vehicleId: vehicle.id,
+                      vehicleName: vehicle.name,
+                      type: "enter",
+                      stopId: nearestStopId,
+                      timestamp: new Date().toISOString(),
+                    });
+                  }
+                  // Duraktan çıkış: önceki durak vardı, şimdi yok
+                  else if (!nearestStopId && previousStopId) {
+                    await recordStopExit(vehicle.id, previousStopId);
+
+                    sendSSE("stopVisit", {
+                      vehicleId: vehicle.id,
+                      vehicleName: vehicle.name,
+                      type: "exit",
+                      stopId: previousStopId,
+                      timestamp: new Date().toISOString(),
+                    });
+                  }
+
+                  // vehicleMap'i güncelle (sonraki kontroller için)
+                  vehicleMap.set(position.deviceId, {
+                    ...vehicle,
+                    lastGeofenceStopId: nearestStopId,
+                  });
 
                   // Veritabanını güncelle
                   await db

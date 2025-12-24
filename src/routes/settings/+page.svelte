@@ -18,7 +18,7 @@
   
   let loading = $state(true);
   let saving = $state(false);
-  let activeTab = $state<'general' | 'traccar' | 'notifications' | 'email' | 'reports' | 'system'>('general');
+  let activeTab = $state<'general' | 'traccar' | 'notifications' | 'email' | 'reports' | 'stopVisits' | 'system'>('general');
   
   async function fetchSettings() {
     loading = true;
@@ -59,6 +59,7 @@
         { id: 'notifications', icon: '🔔', label: 'Bildirimler' },
         { id: 'email', icon: '📧', label: 'Email (SMTP)' },
         { id: 'reports', icon: '📊', label: 'Raporlar' },
+        { id: 'stopVisits', icon: '📍', label: 'Durak Etkinlikleri' },
         { id: 'system', icon: '🖥️', label: 'Sistem' }
       ] as tab}
         <button onclick={() => activeTab = tab.id as typeof activeTab}
@@ -227,6 +228,51 @@
                   <span class="px-2 py-1 bg-red-500/20 text-red-400 rounded text-xs">PDF</span>
                   <span class="px-2 py-1 bg-green-500/20 text-green-400 rounded text-xs">Excel</span>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {:else if activeTab === 'stopVisits'}
+        <h2 class="text-lg font-semibold mb-6">📍 Durak Etkinlikleri</h2>
+        <div class="space-y-6">
+          <a 
+            href="/stop-visits"
+            class="block p-4 bg-purple-500/10 border border-purple-500/30 rounded-xl hover:bg-purple-500/20 transition-colors"
+          >
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <span class="text-2xl">📍</span>
+                <div>
+                  <div class="font-medium text-purple-400">Durak Etkinlik Raporu</div>
+                  <p class="text-sm text-dark-400 mt-1">Araçların duraklara giriş/çıkış kayıtları ve istatistikleri</p>
+                </div>
+              </div>
+              <span class="text-purple-400 text-xl">→</span>
+            </div>
+          </a>
+          
+          <div class="grid grid-cols-2 gap-4">
+            <div class="p-4 bg-dark-700/50 rounded-xl">
+              <div class="text-2xl mb-2">📋</div>
+              <div class="font-medium">Ziyaret Listesi</div>
+              <p class="text-xs text-dark-500 mt-1">Tüm durak giriş/çıkış kayıtları</p>
+            </div>
+            <div class="p-4 bg-dark-700/50 rounded-xl">
+              <div class="text-2xl mb-2">📊</div>
+              <div class="font-medium">Durak İstatistikleri</div>
+              <p class="text-xs text-dark-500 mt-1">Durak bazlı ziyaret sayıları ve süreleri</p>
+            </div>
+          </div>
+          
+          <div class="p-4 bg-dark-700/50 border border-dark-600 rounded-xl">
+            <div class="flex items-start gap-3">
+              <span class="text-xl">ℹ️</span>
+              <div>
+                <div class="font-medium text-dark-300">Otomatik Kayıt</div>
+                <p class="text-sm text-dark-400 mt-1">
+                  Araçlar durak geofence'lerine girdiğinde ve çıktığında otomatik olarak kayıt oluşturulur.
+                  Traccar canlı takip aktif olmalıdır.
+                </p>
               </div>
             </div>
           </div>
