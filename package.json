@@ -44,9 +44,7 @@
   },
   "dependencies": {
     "@types/pdfmake": "^0.2.12",
-    "canvas": "^3.2.0",
     "chart.js": "^4.5.1",
-    "chartjs-node-canvas": "^5.0.0",
     "d3-format": "^3.1.0",
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",

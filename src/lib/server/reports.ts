@@ -3,7 +3,6 @@
  *
  * Profesyonel PDF ve Excel raporları oluşturur:
  * - Türkçe karakter desteği
- * - Grafikler (bar, pie chart)
  * - Tablolar
  * - Özet istatistikler
  */
@@ -14,7 +13,6 @@ import * as schema from "./db/schema";
 import { eq, and, gte, lte, desc } from "drizzle-orm";
 import * as fs from "fs";
 import * as path from "path";
-import { ChartJSNodeCanvas } from "chartjs-node-canvas";
 
 // ============================================================================
 // TYPES
@@ -87,97 +85,6 @@ export interface DailyStatData {
   cancelledCalls: number;
   totalTrips: number;
   avgWaitTime: number;
-}
-
-// ============================================================================
-// CHART GENERATOR (Server-side)
-// ============================================================================
-
-const chartWidth = 600;
-const chartHeight = 300;
-
-const chartJSNodeCanvas = new ChartJSNodeCanvas({
-  width: chartWidth,
-  height: chartHeight,
-  backgroundColour: "white",
-});
-
-/**
- * Araç performans bar chart oluşturur
- */
-async function generateVehicleBarChart(
-  vehicles: VehicleReportData[]
-): Promise<Buffer> {
-  const config = {
-    type: "bar" as const,
-    data: {
-      labels: vehicles.slice(0, 6).map((v) => v.name),
-      datasets: [
-        {
-          label: "Mesafe (km)",
-          data: vehicles.slice(0, 6).map((v) => v.totalDistance),
-          backgroundColor: "rgba(8, 145, 178, 0.8)",
-          borderColor: "rgb(8, 145, 178)",
-          borderWidth: 1,
-        },
-        {
-          label: "Seyahat Sayisi",
-          data: vehicles.slice(0, 6).map((v) => v.tripCount),
-          backgroundColor: "rgba(34, 197, 94, 0.8)",
-          borderColor: "rgb(34, 197, 94)",
-          borderWidth: 1,
-        },
-      ],
-    },
-    options: {
-      responsive: false,
-      plugins: {
-        title: { display: true, text: "Arac Performansi", font: { size: 16 } },
-        legend: { position: "top" as const },
-      },
-      scales: {
-        y: { beginAtZero: true },
-      },
-    },
-  };
-  return await chartJSNodeCanvas.renderToBuffer(config);
-}
-
-/**
- * Çağrı durumu pie chart oluşturur
- */
-async function generateCallsPieChart(summary: ReportSummary): Promise<Buffer> {
-  const config = {
-    type: "pie" as const,
-    data: {
-      labels: ["Tamamlanan", "Iptal Edilen", "Bekleyen"],
-      datasets: [
-        {
-          data: [
-            summary.completedCalls,
-            summary.cancelledCalls,
-            summary.totalCalls -
-              summary.completedCalls -
-              summary.cancelledCalls,
-          ],
-          backgroundColor: [
-            "rgba(34, 197, 94, 0.8)",
-            "rgba(239, 68, 68, 0.8)",
-            "rgba(234, 179, 8, 0.8)",
-          ],
-          borderWidth: 2,
-        },
-      ],
-    },
-    options: {
-      responsive: false,
-      plugins: {
-        title: { display: true, text: "Cagri Dagilimi", font: { size: 16 } },
-        legend: { position: "right" as const },
-      },
-    },
-  };
-  return await chartJSNodeCanvas.renderToBuffer(config);
 }
 
 // ============================================================================
@@ -568,7 +475,7 @@ function addCallsSheet(sheet: ExcelJS.Worksheet, calls: CallReportData[]) {
 }
 
 // ============================================================================
-// PDF EXPORT - Profesyonel Tasarim
+// PDF EXPORT - Profesyonel Tasarim (Grafiksiz)
 // ============================================================================
 
 import PdfPrinter from "pdfmake";
@@ -577,7 +484,6 @@ import type {
   Content,
   TableCell,
 } from "pdfmake/interfaces";
-import * as path from "path";
 
 // Font tanımları - Roboto fontları (Türkçe karakter desteği)
 const fontsDir = path.join(process.cwd(), "static", "fonts");
@@ -593,23 +499,6 @@ const fonts = {
 const printer = new PdfPrinter(fonts);
 
 export async function generatePdfReport(data: ReportData): Promise<Buffer> {
-  // Grafikleri oluştur
-  let vehicleChartBase64 = "";
-  let callsChartBase64 = "";
-
-  try {
-    if (data.vehicles.length > 0) {
-      const vehicleChart = await generateVehicleBarChart(data.vehicles);
-      vehicleChartBase64 = vehicleChart.toString("base64");
-    }
-    if (data.summary.totalCalls > 0) {
-      const callsChart = await generateCallsPieChart(data.summary);
-      callsChartBase64 = callsChart.toString("base64");
-    }
-  } catch (e) {
-    console.error("Chart generation error:", e);
-  }
-
   const docDefinition: TDocumentDefinitions = {
     pageSize: "A4",
     pageMargins: [40, 60, 40, 60],
@@ -643,7 +532,7 @@ export async function generatePdfReport(data: ReportData): Promise<Buffer> {
       margin: [0, 20, 0, 0],
     }),
 
-    content: buildPdfContent(data, vehicleChartBase64, callsChartBase64),
+    content: buildPdfContent(data),
 
     styles: {
       headerLeft: { fontSize: 10, bold: true, color: "#0891b2" },
@@ -689,11 +578,7 @@ export async function generatePdfReport(data: ReportData): Promise<Buffer> {
   });
 }
 
-function buildPdfContent(
-  data: ReportData,
-  vehicleChart: string,
-  callsChart: string
-): Content[] {
+function buildPdfContent(data: ReportData): Content[] {
   const content: Content[] = [];
 
   // Başlık
@@ -727,35 +612,6 @@ function buildPdfContent(
     columnGap: 10,
     margin: [0, 0, 0, 20],
   });
-
-  // Grafikler
-  if (vehicleChart || callsChart) {
-    content.push({ text: "GRAFIKLER", style: "sectionTitle" });
-    const chartColumns: Content[] = [];
-
-    if (vehicleChart) {
-      chartColumns.push({
-        image: `data:image/png;base64,${vehicleChart}`,
-        width: 250,
-        alignment: "center",
-      });
-    }
-    if (callsChart) {
-      chartColumns.push({
-        image: `data:image/png;base64,${callsChart}`,
-        width: 200,
-        alignment: "center",
-      });
-    }
-
-    if (chartColumns.length > 0) {
-      content.push({
-        columns: chartColumns,
-        columnGap: 20,
-        margin: [0, 0, 0, 20],
-      });
-    }
-  }
 
   // Araç Performans Tablosu
   if (data.vehicles.length > 0) {
@@ -806,37 +662,14 @@ function buildVehicleTable(vehicles: VehicleReportData[]): Content {
   ];
 
   vehicles.slice(0, 10).forEach((v, i) => {
+    const fill = i % 2 === 0 ? "#f8fafc" : "white";
     tableBody.push([
-      {
-        text: v.name,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
-      {
-        text: v.plateNumber,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
-      {
-        text: v.tripCount.toString(),
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
-      {
-        text: v.totalDistance.toString(),
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
-      {
-        text: v.totalDuration.toString(),
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
-      {
-        text: `${v.avgSpeed} km/h`,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
+      { text: v.name, style: "tableCell", fillColor: fill },
+      { text: v.plateNumber, style: "tableCell", fillColor: fill },
+      { text: v.tripCount.toString(), style: "tableCell", fillColor: fill },
+      { text: v.totalDistance.toString(), style: "tableCell", fillColor: fill },
+      { text: v.totalDuration.toString(), style: "tableCell", fillColor: fill },
+      { text: `${v.avgSpeed} km/h`, style: "tableCell", fillColor: fill },
     ]);
   });
 
@@ -868,32 +701,17 @@ function buildTripsTable(trips: TripReportData[]): Content {
   ];
 
   trips.forEach((t, i) => {
+    const fill = i % 2 === 0 ? "#f8fafc" : "white";
     tableBody.push([
-      {
-        text: t.vehicleName,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
+      { text: t.vehicleName, style: "tableCell", fillColor: fill },
       {
         text: formatDateTime(t.startTime),
         style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
+        fillColor: fill,
       },
-      {
-        text: `${t.duration} dk`,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
-      {
-        text: `${t.distance} km`,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
-      {
-        text: `${t.avgSpeed} km/h`,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
+      { text: `${t.duration} dk`, style: "tableCell", fillColor: fill },
+      { text: `${t.distance} km`, style: "tableCell", fillColor: fill },
+      { text: `${t.avgSpeed} km/h`, style: "tableCell", fillColor: fill },
     ]);
   });
 
@@ -932,31 +750,24 @@ function buildCallsTable(calls: CallReportData[]): Content {
   ];
 
   calls.forEach((c, i) => {
+    const fill = i % 2 === 0 ? "#f8fafc" : "white";
     tableBody.push([
-      {
-        text: c.stopName,
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
+      { text: c.stopName, style: "tableCell", fillColor: fill },
       {
         text: statusMap[c.status] || c.status,
         style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
+        fillColor: fill,
       },
-      {
-        text: c.vehicleName || "-",
-        style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
-      },
+      { text: c.vehicleName || "-", style: "tableCell", fillColor: fill },
       {
         text: formatDateTime(c.createdAt),
         style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
+        fillColor: fill,
       },
       {
         text: c.waitTime ? `${c.waitTime} dk` : "-",
         style: "tableCell",
-        fillColor: i % 2 === 0 ? "#f8fafc" : "white",
+        fillColor: fill,
       },
     ]);
   });
@@ -1084,4 +895,26 @@ export async function deleteReport(reportId: number): Promise<boolean> {
 
   await db.delete(schema.reports).where(eq(schema.reports.id, reportId));
   return true;
+}
+
+export async function getReportFile(
+  reportId: number
+): Promise<{ buffer: Buffer; filename: string; mimeType: string } | null> {
+  const [report] = await db
+    .select()
+    .from(schema.reports)
+    .where(eq(schema.reports.id, reportId));
+
+  if (!report || !report.filePath || !fs.existsSync(report.filePath)) {
+    return null;
+  }
+
+  const buffer = fs.readFileSync(report.filePath);
+  const filename = path.basename(report.filePath);
+  const mimeType =
+    report.format === "excel"
+      ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      : "application/pdf";
+
+  return { buffer, filename, mimeType };
 }
