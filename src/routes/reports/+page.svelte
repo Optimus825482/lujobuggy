@@ -45,9 +45,17 @@
   let reports = $state<Report[]>([]);
   let scheduledReports = $state<ScheduledReport[]>([]);
   let vehicles = $state<Vehicle[]>([]);
-  let activeTab = $state<'reports' | 'scheduled' | 'create'>('reports');
+  let activeTab = $state<'reports' | 'scheduled' | 'create' | 'traccar'>('reports');
   let error = $state<string | null>(null);
   let success = $state<string | null>(null);
+
+  // Traccar Reports State
+  let traccarReportType = $state<'summary' | 'trips' | 'stops' | 'events'>('summary');
+  let traccarReportData = $state<any[]>([]);
+  let traccarReportLoading = $state(false);
+  let traccarDateFrom = $state(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 16));
+  let traccarDateTo = $state(new Date().toISOString().slice(0, 16));
+  let traccarSelectedVehicle = $state<number | null>(null);
 
   // Create Report Form
   let createForm = $state({
@@ -103,6 +111,39 @@
       error = 'Veri yüklenirken hata oluştu';
     } finally {
       loading = false;
+    }
+  }
+
+  async function fetchTraccarReport() {
+    traccarReportLoading = true;
+    error = null;
+
+    try {
+      let url = `/api/traccar/reports?type=${traccarReportType}&from=${encodeURIComponent(new Date(traccarDateFrom).toISOString())}&to=${encodeURIComponent(new Date(traccarDateTo).toISOString())}`;
+      
+      if (traccarSelectedVehicle) {
+        // Araç ID'sinden Traccar device ID'sini bul
+        const vehicle = vehicles.find(v => v.id === traccarSelectedVehicle);
+        if (vehicle && (vehicle as any).traccarId) {
+          url += `&deviceId=${(vehicle as any).traccarId}`;
+        }
+      }
+
+      const res = await fetch(url);
+      const data = await res.json();
+
+      if (data.success) {
+        traccarReportData = data.data;
+        if (data.data.length === 0) {
+          success = 'Bu tarih aralığında veri bulunamadı';
+        }
+      } else {
+        error = data.message || 'Rapor alınırken hata oluştu';
+      }
+    } catch (err) {
+      error = 'Traccar raporu alınırken hata oluştu';
+    } finally {
+      traccarReportLoading = false;
     }
   }
 
@@ -310,6 +351,12 @@
         ⏰ Zamanlanmış ({scheduledReports.length})
       </button>
       <button
+        onclick={() => activeTab = 'traccar'}
+        class="px-4 py-2 rounded-lg text-sm font-medium transition-colors {activeTab === 'traccar' ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}"
+      >
+        📡 Traccar Raporları
+      </button>
+      <button
         onclick={() => activeTab = 'create'}
         class="px-4 py-2 rounded-lg text-sm font-medium transition-colors {activeTab === 'create' ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}"
       >
@@ -454,6 +501,247 @@
               {/each}
             </div>
           {/if}
+        </div>
+      {/if}
+
+      <!-- Traccar Reports -->
+      {#if activeTab === 'traccar'}
+        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-700">
+            <h2 class="text-lg font-semibold flex items-center gap-2">
+              📡 Traccar Anlık Raporları
+            </h2>
+            <p class="text-sm text-slate-400 mt-1">Traccar sunucusundan gerçek zamanlı rapor verileri</p>
+          </div>
+
+          <!-- Filtreler -->
+          <div class="p-4 bg-slate-700/30 border-b border-slate-700">
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+              <!-- Rapor Tipi -->
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Rapor Tipi</label>
+                <select
+                  bind:value={traccarReportType}
+                  class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="summary">📊 Özet Rapor</option>
+                  <option value="trips">🚗 Seyahat Raporu</option>
+                  <option value="stops">🛑 Durak Raporu</option>
+                  <option value="events">⚡ Event Raporu</option>
+                </select>
+              </div>
+
+              <!-- Araç -->
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Araç</label>
+                <select
+                  bind:value={traccarSelectedVehicle}
+                  class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value={null}>Tüm Araçlar</option>
+                  {#each vehicles as vehicle}
+                    <option value={vehicle.id}>{vehicle.name}</option>
+                  {/each}
+                </select>
+              </div>
+
+              <!-- Başlangıç -->
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Başlangıç</label>
+                <input
+                  type="datetime-local"
+                  bind:value={traccarDateFrom}
+                  class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                />
+              </div>
+
+              <!-- Bitiş -->
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">Bitiş</label>
+                <input
+                  type="datetime-local"
+                  bind:value={traccarDateTo}
+                  class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                />
+              </div>
+
+              <!-- Buton -->
+              <div class="flex items-end">
+                <button
+                  onclick={fetchTraccarReport}
+                  disabled={traccarReportLoading}
+                  class="w-full px-4 py-2 bg-green-600 hover:bg-green-500 disabled:bg-slate-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                >
+                  {#if traccarReportLoading}
+                    <div class="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full"></div>
+                  {:else}
+                    🔍
+                  {/if}
+                  Rapor Al
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sonuçlar -->
+          <div class="p-4">
+            {#if traccarReportLoading}
+              <div class="flex items-center justify-center py-10">
+                <div class="animate-spin w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full"></div>
+                <span class="ml-3 text-slate-400">Rapor yükleniyor...</span>
+              </div>
+            {:else if traccarReportData.length === 0}
+              <div class="text-center py-10 text-slate-500">
+                <div class="text-4xl mb-2">📊</div>
+                <p>Rapor almak için tarih aralığı seçin ve "Rapor Al" butonuna tıklayın</p>
+              </div>
+            {:else}
+              <!-- Özet Rapor -->
+              {#if traccarReportType === 'summary'}
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-700/50">
+                      <tr>
+                        <th class="px-4 py-3 text-left text-slate-400">Araç</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Mesafe</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Max Hız</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Ort. Hız</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Motor Süresi</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700">
+                      {#each traccarReportData as row}
+                        <tr class="hover:bg-slate-700/30">
+                          <td class="px-4 py-3 font-medium">{row.vehicleName || row.deviceName}</td>
+                          <td class="px-4 py-3 text-right text-cyan-400">{row.distanceKm} km</td>
+                          <td class="px-4 py-3 text-right text-yellow-400">{row.maxSpeedKmh} km/h</td>
+                          <td class="px-4 py-3 text-right">{row.averageSpeedKmh} km/h</td>
+                          <td class="px-4 py-3 text-right text-slate-400">{row.engineHoursFormatted}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+
+              <!-- Seyahat Raporu -->
+              {#if traccarReportType === 'trips'}
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-700/50">
+                      <tr>
+                        <th class="px-4 py-3 text-left text-slate-400">Araç</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Başlangıç</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Bitiş</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Mesafe</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Süre</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Max Hız</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700">
+                      {#each traccarReportData as row}
+                        <tr class="hover:bg-slate-700/30">
+                          <td class="px-4 py-3 font-medium">{row.vehicleName || row.deviceName}</td>
+                          <td class="px-4 py-3 text-xs">
+                            <div>{new Date(row.startTime).toLocaleDateString('tr-TR')}</div>
+                            <div class="text-slate-400">{new Date(row.startTime).toLocaleTimeString('tr-TR')}</div>
+                          </td>
+                          <td class="px-4 py-3 text-xs">
+                            <div>{new Date(row.endTime).toLocaleDateString('tr-TR')}</div>
+                            <div class="text-slate-400">{new Date(row.endTime).toLocaleTimeString('tr-TR')}</div>
+                          </td>
+                          <td class="px-4 py-3 text-right text-cyan-400">{row.distanceKm} km</td>
+                          <td class="px-4 py-3 text-right">{row.durationFormatted}</td>
+                          <td class="px-4 py-3 text-right text-yellow-400">{row.maxSpeedKmh} km/h</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+
+              <!-- Durak Raporu -->
+              {#if traccarReportType === 'stops'}
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-700/50">
+                      <tr>
+                        <th class="px-4 py-3 text-left text-slate-400">Araç</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Başlangıç</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Bitiş</th>
+                        <th class="px-4 py-3 text-right text-slate-400">Süre</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Adres</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700">
+                      {#each traccarReportData as row}
+                        <tr class="hover:bg-slate-700/30">
+                          <td class="px-4 py-3 font-medium">{row.vehicleName || row.deviceName}</td>
+                          <td class="px-4 py-3 text-xs">
+                            <div>{new Date(row.startTime).toLocaleDateString('tr-TR')}</div>
+                            <div class="text-slate-400">{new Date(row.startTime).toLocaleTimeString('tr-TR')}</div>
+                          </td>
+                          <td class="px-4 py-3 text-xs">
+                            <div>{new Date(row.endTime).toLocaleDateString('tr-TR')}</div>
+                            <div class="text-slate-400">{new Date(row.endTime).toLocaleTimeString('tr-TR')}</div>
+                          </td>
+                          <td class="px-4 py-3 text-right text-cyan-400">{row.durationFormatted}</td>
+                          <td class="px-4 py-3 text-xs text-slate-400 max-w-xs truncate">{row.address || '-'}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+
+              <!-- Event Raporu -->
+              {#if traccarReportType === 'events'}
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead class="bg-slate-700/50">
+                      <tr>
+                        <th class="px-4 py-3 text-left text-slate-400">Araç</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Zaman</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Event Tipi</th>
+                        <th class="px-4 py-3 text-left text-slate-400">Geofence</th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700">
+                      {#each traccarReportData as row}
+                        <tr class="hover:bg-slate-700/30">
+                          <td class="px-4 py-3 font-medium">{row.vehicleName || row.deviceName}</td>
+                          <td class="px-4 py-3 text-xs">
+                            <div>{new Date(row.eventTime).toLocaleDateString('tr-TR')}</div>
+                            <div class="text-slate-400">{new Date(row.eventTime).toLocaleTimeString('tr-TR')}</div>
+                          </td>
+                          <td class="px-4 py-3">
+                            <span class="px-2 py-1 rounded text-xs {
+                              row.type === 'geofenceEnter' ? 'bg-green-500/20 text-green-400' :
+                              row.type === 'geofenceExit' ? 'bg-red-500/20 text-red-400' :
+                              row.type === 'deviceOnline' ? 'bg-cyan-500/20 text-cyan-400' :
+                              row.type === 'deviceOffline' ? 'bg-slate-500/20 text-slate-400' :
+                              'bg-yellow-500/20 text-yellow-400'
+                            }">
+                              {row.type}
+                            </span>
+                          </td>
+                          <td class="px-4 py-3 text-slate-400">{row.geofenceId || '-'}</td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
+
+              <!-- Sonuç Özeti -->
+              <div class="mt-4 pt-4 border-t border-slate-700 flex items-center justify-between text-sm text-slate-400">
+                <span>Toplam {traccarReportData.length} kayıt</span>
+                <span>
+                  {new Date(traccarDateFrom).toLocaleDateString('tr-TR')} - {new Date(traccarDateTo).toLocaleDateString('tr-TR')}
+                </span>
+              </div>
+            {/if}
+          </div>
         </div>
       {/if}
 

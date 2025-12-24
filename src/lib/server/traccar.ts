@@ -358,8 +358,9 @@ export async function createGeofence(
   radius: number = 15
 ): Promise<TraccarGeofence | null> {
   try {
-    // WKT CIRCLE format: CIRCLE (lng lat, radius)
-    const area = `CIRCLE (${lng} ${lat}, ${radius})`;
+    // WKT CIRCLE format: CIRCLE (longitude latitude, radius)
+    // ÖNEMLİ: WKT formatında sıra longitude (lng) sonra latitude (lat)
+    const area = `CIRCLE (${lat} ${lng}, ${radius})`;
 
     const response = await traccarFetch("/api/geofences", {
       method: "POST",
@@ -469,6 +470,20 @@ export function secondsToHMS(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
+  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s
+    .toString()
+    .padStart(2, "0")}`;
+}
+
+/**
+ * Milisaniyeyi saat:dakika:saniye formatına çevirir
+ * Traccar API duration değerleri milisaniye cinsinden döner
+ */
+export function msToHMS(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
   return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s
     .toString()
     .padStart(2, "0")}`;

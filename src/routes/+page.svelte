@@ -110,10 +110,15 @@
   let selectedVehicleRoute = $state<number | null>(null);
   let selectedVehicleInfo = $state<{ vehicle: any, task: any, targetStop: string } | null>(null);
   
-  // Traccar canlı takip state
-  let traccarEnabled = $state(false);
+  // Traccar canlı takip state - OTOMATİK AKTİF
+  let traccarEnabled = $state(true); // Varsayılan: açık
   let traccarStatus = $state<{ connected: boolean; onlineCount?: number } | null>(null);
   let traccarSyncing = $state(false);
+  let traccarLastUpdate = $state<Date | null>(null);
+  let traccarReconnectAttempts = $state(0);
+  const TRACCAR_MAX_RECONNECT = 10;
+  const TRACCAR_POLLING_INTERVAL = 3000; // 3 saniye fallback polling
+  let traccarPollingInterval: ReturnType<typeof setInterval> | null = null;
   
   const routeColors = [
     { name: 'Kırmızı', value: '#FF0000' },
@@ -157,6 +162,27 @@
       }
       updateMarkers();
       updateVehicleRouteLine(); // Araç rota çizgisini güncelle (araç hareket ettikçe)
+      
+      // Seçili araç card'ını güncelle
+      if (selectedVehicleInfo) {
+        const updatedVehicle = vehicles.find(v => v.id === selectedVehicleInfo!.vehicle.id);
+        if (updatedVehicle) {
+          const activeTask = tasks.find((t: any) => t.vehicleId === updatedVehicle.id && (t.status === 'assigned' || t.status === 'pickup' || t.status === 'dropoff'));
+          let targetStopName = '';
+          if (activeTask) {
+            if (activeTask.status === 'assigned' && activeTask.pickupStopId) {
+              const pickupStop = stops.find(s => s.id === activeTask.pickupStopId);
+              targetStopName = pickupStop ? `📍 ${pickupStop.name}` : '';
+            } else if ((activeTask.status === 'pickup' || activeTask.status === 'dropoff') && activeTask.dropoffStopId) {
+              const dropoffStop = stops.find(s => s.id === activeTask.dropoffStopId);
+              targetStopName = dropoffStop ? `🎯 ${dropoffStop.name}` : '';
+            } else if (activeTask.status === 'pickup' && !activeTask.dropoffStopId) {
+              targetStopName = '⏳ Hedef Bekliyor';
+            }
+          }
+          selectedVehicleInfo = { vehicle: updatedVehicle, task: activeTask, targetStop: targetStopName };
+        }
+      }
       
       // Traccar canlı takip aktifse, konumları senkronize et
       if (traccarEnabled && !traccarSyncing) {
@@ -212,39 +238,39 @@
   let traccarEventSource: EventSource | null = null;
   let traccarRealtimeConnected = $state(false);
 
-  // Traccar toggle - SSE ile gerçek zamanlı takip
-  function toggleTraccar() {
-    traccarEnabled = !traccarEnabled;
-    if (traccarEnabled) {
-      checkTraccarStatus();
-      syncTraccarPositions();
-      startTraccarStream();
-    } else {
-      stopTraccarStream();
-    }
-  }
-
-  // SSE stream başlat
+  // SSE stream başlat - Geliştirilmiş versiyon
   function startTraccarStream() {
     if (traccarEventSource) {
       traccarEventSource.close();
     }
     
+    console.log('[Traccar] SSE stream başlatılıyor...');
     traccarEventSource = new EventSource('/api/traccar/stream');
     
     traccarEventSource.addEventListener('connected', () => {
       traccarRealtimeConnected = true;
-      console.log('[Traccar SSE] Connected');
+      traccarReconnectAttempts = 0;
+      traccarLastUpdate = new Date();
+      console.log('[Traccar SSE] Bağlandı ✓');
+      // SSE bağlandığında polling'i durdur
+      stopTraccarPolling();
     });
     
     traccarEventSource.addEventListener('disconnected', () => {
       traccarRealtimeConnected = false;
-      console.log('[Traccar SSE] Disconnected');
+      console.log('[Traccar SSE] Bağlantı kesildi');
+      // Polling'e geç
+      startTraccarPolling();
+    });
+    
+    traccarEventSource.addEventListener('ping', () => {
+      traccarLastUpdate = new Date();
     });
     
     traccarEventSource.addEventListener('position', (event) => {
       try {
         const data = JSON.parse(event.data);
+        traccarLastUpdate = new Date();
         // Araç konumunu güncelle
         const vehicleIndex = vehicles.findIndex(v => v.id === data.vehicleId);
         if (vehicleIndex !== -1) {
@@ -254,11 +280,20 @@
             lng: data.lng,
             speed: data.speed,
             heading: data.heading,
-            lastUpdate: data.timestamp
+            lastUpdate: data.timestamp,
+            gpsSignal: true
           };
           // Marker'ı güncelle
           updateMarkers();
           updateVehicleRouteLine();
+          
+          // Seçili araç card'ını güncelle
+          if (selectedVehicleInfo && selectedVehicleInfo.vehicle.id === data.vehicleId) {
+            selectedVehicleInfo = {
+              ...selectedVehicleInfo,
+              vehicle: vehicles[vehicleIndex]
+            };
+          }
         }
       } catch (e) {
         console.error('[Traccar SSE] Position parse error:', e);
@@ -268,6 +303,7 @@
     traccarEventSource.addEventListener('device', (event) => {
       try {
         const data = JSON.parse(event.data);
+        traccarLastUpdate = new Date();
         // Araç durumunu güncelle
         const vehicleIndex = vehicles.findIndex(v => v.id === data.vehicleId);
         if (vehicleIndex !== -1) {
@@ -285,12 +321,40 @@
     
     traccarEventSource.addEventListener('error', () => {
       traccarRealtimeConnected = false;
-      console.error('[Traccar SSE] Error');
+      console.error('[Traccar SSE] Hata - yeniden bağlanılıyor...');
+      // Yeniden bağlanma
+      if (traccarEnabled && traccarReconnectAttempts < TRACCAR_MAX_RECONNECT) {
+        traccarReconnectAttempts++;
+        setTimeout(() => {
+          if (traccarEnabled) startTraccarStream();
+        }, 3000 * traccarReconnectAttempts); // Exponential backoff
+      }
+      // Polling'e geç
+      startTraccarPolling();
     });
     
     traccarEventSource.onerror = () => {
       traccarRealtimeConnected = false;
     };
+  }
+  
+  // Fallback polling başlat
+  function startTraccarPolling() {
+    if (traccarPollingInterval) return; // Zaten çalışıyor
+    console.log('[Traccar] Polling moduna geçildi (3sn)');
+    traccarPollingInterval = setInterval(async () => {
+      if (!traccarEnabled) return;
+      await syncTraccarPositions();
+    }, TRACCAR_POLLING_INTERVAL);
+  }
+  
+  // Polling durdur
+  function stopTraccarPolling() {
+    if (traccarPollingInterval) {
+      clearInterval(traccarPollingInterval);
+      traccarPollingInterval = null;
+      console.log('[Traccar] Polling durduruldu');
+    }
   }
   
   // SSE stream durdur
@@ -300,6 +364,20 @@
       traccarEventSource = null;
     }
     traccarRealtimeConnected = false;
+    stopTraccarPolling();
+  }
+
+  // Traccar toggle - SSE ile gerçek zamanlı takip
+  function toggleTraccar() {
+    traccarEnabled = !traccarEnabled;
+    if (traccarEnabled) {
+      traccarReconnectAttempts = 0;
+      checkTraccarStatus();
+      syncTraccarPositions();
+      startTraccarStream();
+    } else {
+      stopTraccarStream();
+    }
   }
 
   function hasPendingCall(stopId: number): boolean {
@@ -1256,7 +1334,16 @@
 
   onMount(() => {
     initMap();
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 5000); // 5 saniyede bir veri güncelle
+    
+    // Traccar otomatik başlat
+    if (traccarEnabled) {
+      console.log('[Traccar] Otomatik bağlantı başlatılıyor...');
+      checkTraccarStatus();
+      syncTraccarPositions();
+      startTraccarStream();
+    }
+    
     return () => { 
       clearInterval(interval); 
       map?.remove();
@@ -1307,18 +1394,21 @@
             {/if}
           </button>
           <div class="w-2 h-2 rounded-full {appStore.isDemo ? 'bg-yellow-500' : 'bg-green-500'} animate-pulse"></div>
-          <!-- Traccar Toggle -->
+          <!-- Traccar Toggle - Geliştirilmiş Durum Göstergesi -->
           <button 
             onclick={toggleTraccar}
-            class="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs transition-all {traccarEnabled ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50' : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'}"
-            title="Traccar Canlı Takip {traccarRealtimeConnected ? '(Bağlı)' : ''}"
+            class="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs transition-all {traccarEnabled ? (traccarRealtimeConnected ? 'bg-green-500/20 text-green-400 border border-green-500/50' : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50') : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'}"
+            title="Traccar GPS Takip {traccarRealtimeConnected ? '(Gerçek Zamanlı)' : traccarEnabled ? '(Polling)' : '(Kapalı)'}"
           >
-            <span class="text-sm">📡</span>
+            <span class="text-sm">{traccarRealtimeConnected ? '🟢' : traccarEnabled ? '🟡' : '📡'}</span>
+            <span class="hidden sm:inline">GPS</span>
             {#if traccarEnabled}
               {#if traccarRealtimeConnected}
                 <span class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" title="Gerçek zamanlı bağlı"></span>
+              {:else if traccarSyncing}
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-spin" title="Senkronize ediliyor..."></span>
               {:else}
-                <span class="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" title="Bağlanıyor..."></span>
+                <span class="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" title="Polling modu"></span>
               {/if}
             {/if}
           </button>

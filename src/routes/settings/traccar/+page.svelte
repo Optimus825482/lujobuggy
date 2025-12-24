@@ -13,6 +13,8 @@
   let error = $state<string | null>(null);
   let successMessage = $state<string | null>(null);
   let lastSyncResult = $state<any[]>([]);
+  let serverInfo = $state<any>(null);
+  let loadingServerInfo = $state(false);
 
   // GPS Düzeltme ayarları
   let snapToRouteEnabled = $state(true);
@@ -25,7 +27,23 @@
 
   onMount(() => {
     fetchData();
+    fetchServerInfo();
   });
+
+  async function fetchServerInfo() {
+    loadingServerInfo = true;
+    try {
+      const res = await fetch('/api/traccar/server');
+      const data = await res.json();
+      if (data.success) {
+        serverInfo = data.data;
+      }
+    } catch (err) {
+      console.error('Server info error:', err);
+    } finally {
+      loadingServerInfo = false;
+    }
+  }
 
   async function fetchData() {
     loading = true;
@@ -237,13 +255,27 @@
     {:else}
       <!-- Traccar Status Card -->
       <div class="bg-slate-800 rounded-xl p-6 mb-6 border border-slate-700">
-        <h2 class="text-lg font-semibold mb-4 flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full {traccarStatus?.connected ? 'bg-green-500' : 'bg-red-500'}"></span>
-          Traccar Sunucu Durumu
-        </h2>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full {traccarStatus?.connected ? 'bg-green-500' : 'bg-red-500'}"></span>
+            Traccar Sunucu Durumu
+          </h2>
+          <button
+            onclick={fetchServerInfo}
+            disabled={loadingServerInfo}
+            class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs transition-colors flex items-center gap-1"
+          >
+            {#if loadingServerInfo}
+              <div class="animate-spin w-3 h-3 border-2 border-cyan-500 border-t-transparent rounded-full"></div>
+            {:else}
+              ↻
+            {/if}
+            Yenile
+          </button>
+        </div>
         
         {#if traccarStatus?.connected}
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <div class="bg-slate-700/50 rounded-lg p-4 text-center">
               <div class="text-2xl font-bold text-cyan-400">{summary?.totalTraccarDevices || 0}</div>
               <div class="text-xs text-slate-400">Toplam Cihaz</div>
@@ -261,6 +293,76 @@
               <div class="text-xs text-slate-400">Toplam Araç</div>
             </div>
           </div>
+
+          <!-- Sunucu Detayları -->
+          {#if serverInfo}
+            <div class="border-t border-slate-700 pt-4">
+              <h3 class="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                🖥️ Sunucu Bilgileri
+              </h3>
+              <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                <div class="bg-slate-700/30 rounded-lg p-3">
+                  <div class="text-xs text-slate-500">Versiyon</div>
+                  <div class="text-cyan-400 font-mono">{serverInfo.server?.version || '-'}</div>
+                </div>
+                <div class="bg-slate-700/30 rounded-lg p-3">
+                  <div class="text-xs text-slate-500">Sunucu URL</div>
+                  <div class="text-white font-mono text-xs truncate">{serverInfo.server?.url || '-'}</div>
+                </div>
+                <div class="bg-slate-700/30 rounded-lg p-3">
+                  <div class="text-xs text-slate-500">Harita Tipi</div>
+                  <div class="text-white">{serverInfo.server?.map || '-'}</div>
+                </div>
+                <div class="bg-slate-700/30 rounded-lg p-3">
+                  <div class="text-xs text-slate-500">Geocoder</div>
+                  <div class="{serverInfo.server?.geocoderEnabled ? 'text-green-400' : 'text-slate-500'}">
+                    {serverInfo.server?.geocoderEnabled ? '✓ Aktif' : '✗ Kapalı'}
+                  </div>
+                </div>
+                <div class="bg-slate-700/30 rounded-lg p-3">
+                  <div class="text-xs text-slate-500">E-posta</div>
+                  <div class="{serverInfo.server?.emailEnabled ? 'text-green-400' : 'text-slate-500'}">
+                    {serverInfo.server?.emailEnabled ? '✓ Aktif' : '✗ Kapalı'}
+                  </div>
+                </div>
+                <div class="bg-slate-700/30 rounded-lg p-3">
+                  <div class="text-xs text-slate-500">Kayıt</div>
+                  <div class="{serverInfo.server?.registration ? 'text-green-400' : 'text-slate-500'}">
+                    {serverInfo.server?.registration ? '✓ Açık' : '✗ Kapalı'}
+                  </div>
+                </div>
+              </div>
+
+              <!-- İstatistikler -->
+              {#if serverInfo.statistics}
+                <h3 class="text-sm font-medium text-slate-300 mt-4 mb-3 flex items-center gap-2">
+                  📊 Anlık İstatistikler
+                </h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div class="bg-slate-700/30 rounded-lg p-3 text-center">
+                    <div class="text-lg font-bold text-white">{serverInfo.statistics.totalPositions}</div>
+                    <div class="text-xs text-slate-500">Toplam Konum</div>
+                  </div>
+                  <div class="bg-slate-700/30 rounded-lg p-3 text-center">
+                    <div class="text-lg font-bold text-green-400">{serverInfo.statistics.validPositions}</div>
+                    <div class="text-xs text-slate-500">Geçerli Konum</div>
+                  </div>
+                  <div class="bg-slate-700/30 rounded-lg p-3 text-center">
+                    <div class="text-lg font-bold text-cyan-400">{serverInfo.statistics.activeDevices24h}</div>
+                    <div class="text-xs text-slate-500">Aktif (24s)</div>
+                  </div>
+                  <div class="bg-slate-700/30 rounded-lg p-3 text-center">
+                    <div class="text-lg font-bold text-yellow-400">{serverInfo.statistics.averageSpeedKmh} km/h</div>
+                    <div class="text-xs text-slate-500">Ort. Hız</div>
+                  </div>
+                </div>
+              {/if}
+
+              <div class="mt-3 text-xs text-slate-500 text-right">
+                Son güncelleme: {serverInfo.lastUpdate ? new Date(serverInfo.lastUpdate).toLocaleTimeString('tr-TR') : '-'}
+              </div>
+            </div>
+          {/if}
         {:else}
           <div class="text-red-400 text-sm">
             ⚠️ Traccar sunucusuna bağlanılamıyor. Lütfen .env dosyasındaki TRACCAR_URL, TRACCAR_USER ve TRACCAR_PASSWORD değerlerini kontrol edin.

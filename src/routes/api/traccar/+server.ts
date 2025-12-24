@@ -76,7 +76,7 @@ export const GET: RequestHandler = async ({ url }) => {
           maxSpeedKmh: traccar.knotsToKmh(t.maxSpeed),
           averageSpeedKmh: traccar.knotsToKmh(t.averageSpeed),
           distanceKm: traccar.metersToKm(t.distance),
-          durationFormatted: traccar.secondsToHMS(t.duration),
+          durationFormatted: traccar.msToHMS(t.duration),
         }));
         return json({ success: true, data: tripsConverted });
       }
@@ -98,7 +98,7 @@ export const GET: RequestHandler = async ({ url }) => {
         );
         const stopsConverted = stops.map((s) => ({
           ...s,
-          durationFormatted: traccar.secondsToHMS(s.duration),
+          durationFormatted: traccar.msToHMS(s.duration),
         }));
         return json({ success: true, data: stopsConverted });
       }

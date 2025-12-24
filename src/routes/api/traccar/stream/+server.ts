@@ -1,80 +1,46 @@
 /**
- * Traccar Real-time Stream API (Server-Sent Events)
+ * Traccar Real-time Stream API (Server-Sent Events) - v4.0 WebSocket with Token
  *
- * GET /api/traccar/stream - Traccar WebSocket'ten gelen verileri SSE olarak yayınlar
+ * GET /api/traccar/stream - Traccar WebSocket'e token ile bağlanır ve SSE olarak yayınlar
  *
  * Bu endpoint:
- * 1. Traccar WebSocket'e bağlanır
- * 2. Gelen position/device güncellemelerini SSE olarak client'a iletir
- * 3. Veritabanını otomatik günceller
+ * 1. Token ile Traccar session oluşturur
+ * 2. Session cookie ile WebSocket bağlantısı kurar
+ * 3. Gelen verileri SSE olarak client'a iletir
+ * 4. Veritabanını otomatik günceller
  */
 
-import { env } from "$env/dynamic/private";
 import type { RequestHandler } from "./$types";
+import { env } from "$env/dynamic/private";
 import { db } from "$lib/server/db";
 import * as schema from "$lib/server/db/schema";
 import { eq } from "drizzle-orm";
 import { fullCorrection, correctHeading } from "$lib/server/gps-correction";
 import { calculateDistance } from "$lib/utils/geo";
 import { knotsToKmh } from "$lib/server/traccar";
-import {
-  startTrip,
-  endTrip,
-  updateTripStats,
-} from "$lib/server/trip-detection";
+import { updateTripStats } from "$lib/server/trip-detection";
 import { recordStopEnter, recordStopExit } from "$lib/server/stop-visits";
 
 const TRACCAR_URL = env.TRACCAR_URL || "https://traccar.optimistdemo.cloud";
-const TRACCAR_USER = env.TRACCAR_USER || "admin";
-const TRACCAR_PASSWORD = env.TRACCAR_PASSWORD || "admin";
-
-interface TraccarWSMessage {
-  devices?: Array<{
-    id: number;
-    name: string;
-    status: string;
-    lastUpdate: string;
-  }>;
-  positions?: Array<{
-    id: number;
-    deviceId: number;
-    latitude: number;
-    longitude: number;
-    speed: number;
-    course: number;
-    valid: boolean;
-    serverTime: string;
-    attributes: Record<string, any>;
-  }>;
-  events?: Array<{
-    id: number;
-    type: string;
-    deviceId: number;
-    positionId: number;
-    geofenceId?: number;
-  }>;
-}
+const TRACCAR_TOKEN = env.TRACCAR_TOKEN || "";
+const PING_INTERVAL = 15000;
+const RECONNECT_DELAY = 3000;
 
 export const GET: RequestHandler = async ({ request }) => {
   const encoder = new TextEncoder();
 
-  // SSE stream oluştur
   const stream = new ReadableStream({
     async start(controller) {
-      // WebSocket URL oluştur
-      const wsProtocol = TRACCAR_URL.startsWith("https") ? "wss" : "ws";
-      const baseUrl = TRACCAR_URL.replace(/^https?:\/\//, "");
-      const wsUrl = `${wsProtocol}://${baseUrl}/api/socket`;
-
-      // Basic Auth header
-      const auth = Buffer.from(`${TRACCAR_USER}:${TRACCAR_PASSWORD}`).toString(
-        "base64"
-      );
-
+      let isClosing = false;
       let ws: WebSocket | null = null;
       let pingInterval: ReturnType<typeof setInterval> | null = null;
       let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-      let isClosing = false;
+
+      // Son bilinen konumları sakla (değişiklik tespiti için)
+      const lastPositions = new Map<
+        number,
+        { lat: number; lng: number; speed: number }
+      >();
 
       // Durakları çek (GPS düzeltme için)
       const stops = await db.select().from(schema.stops);
@@ -86,385 +52,374 @@ export const GET: RequestHandler = async ({ request }) => {
       }));
 
       // Araç-Traccar ID eşleştirmesini çek
-      const vehicles = await db.select().from(schema.vehicles);
-      const vehicleMap = new Map(
+      let vehicles = await db.select().from(schema.vehicles);
+      let vehicleMap = new Map(
         vehicles.filter((v) => v.traccarId).map((v) => [v.traccarId!, v])
       );
 
       function sendSSE(event: string, data: any) {
+        if (isClosing) return;
         try {
           const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
           controller.enqueue(encoder.encode(message));
-        } catch (e) {
+        } catch {
           // Stream kapalı olabilir
         }
       }
 
-      function connect() {
+      // Position işleme fonksiyonu
+      async function processPosition(position: any, device?: any) {
+        if (!position.valid) return;
+
+        const vehicle = vehicleMap.get(position.deviceId);
+        if (!vehicle) return;
+
+        // GPS Düzeltme
+        let finalLat = position.latitude;
+        let finalLng = position.longitude;
+        let finalHeading = position.course;
+
+        const correction = fullCorrection(
+          position.longitude,
+          position.latitude,
+          stopsForCorrection,
+          { stopSnapRadius: 15, routeMaxDistance: 40 }
+        );
+
+        finalLat = correction.lat;
+        finalLng = correction.lng;
+
+        if (correction.correctionType !== "none") {
+          finalHeading = correctHeading(finalLng, finalLat, position.course);
+        }
+
+        // Değişiklik var mı kontrol et
+        const lastPos = lastPositions.get(vehicle.id);
+        const hasChanged =
+          !lastPos ||
+          Math.abs(lastPos.lat - finalLat) > 0.00001 ||
+          Math.abs(lastPos.lng - finalLng) > 0.00001 ||
+          Math.abs(lastPos.speed - knotsToKmh(position.speed)) > 0.5;
+
+        if (!hasChanged) return;
+
+        // Son pozisyonu güncelle
+        lastPositions.set(vehicle.id, {
+          lat: finalLat,
+          lng: finalLng,
+          speed: knotsToKmh(position.speed),
+        });
+
+        // En yakın durağı bul
+        let nearestStopId: number | null = null;
+        let nearestStopDistance = Infinity;
+
+        for (const stop of stops) {
+          const distance = calculateDistance(
+            { lat: finalLat, lng: finalLng },
+            { lat: stop.lat, lng: stop.lng }
+          );
+          const geofenceRadius = stop.geofenceRadius || 15;
+
+          if (distance <= geofenceRadius && distance < nearestStopDistance) {
+            nearestStopId = stop.id;
+            nearestStopDistance = distance;
+          }
+        }
+
+        // Durak giriş/çıkış kontrolü
+        const previousStopId = vehicle.lastGeofenceStopId;
+
+        if (nearestStopId && nearestStopId !== previousStopId) {
+          if (previousStopId) {
+            await recordStopExit(vehicle.id, previousStopId);
+          }
+          await recordStopEnter(vehicle.id, nearestStopId);
+
+          sendSSE("stopVisit", {
+            vehicleId: vehicle.id,
+            vehicleName: vehicle.name,
+            type: "enter",
+            stopId: nearestStopId,
+            timestamp: new Date().toISOString(),
+          });
+        } else if (!nearestStopId && previousStopId) {
+          await recordStopExit(vehicle.id, previousStopId);
+
+          sendSSE("stopVisit", {
+            vehicleId: vehicle.id,
+            vehicleName: vehicle.name,
+            type: "exit",
+            stopId: previousStopId,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        // Durum belirleme
+        // Position geliyorsa cihaz online demektir (device status "unknown" olsa bile)
+        // Sadece device.status açıkça "offline" ise offline yap
+        const isOnline = device?.status !== "offline"; // Position geldi = online
+        let newStatus = vehicle.status;
+        if (isOnline && vehicle.status === "offline") {
+          newStatus = "available";
+        }
+        // NOT: Position geliyorsa offline yapma - sadece device status "offline" olduğunda offline yap
+
+        // Veritabanını güncelle
+        await db
+          .update(schema.vehicles)
+          .set({
+            lat: finalLat,
+            lng: finalLng,
+            speed: knotsToKmh(position.speed),
+            heading: finalHeading,
+            gpsSignal: true, // Position geldi = GPS aktif
+            status: newStatus,
+            lastUpdate: new Date(position.serverTime),
+            lastTraccarUpdate: new Date(),
+            lastGeofenceStopId: nearestStopId,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.vehicles.id, vehicle.id));
+
+        // Trip istatistiklerini güncelle
+        await updateTripStats(
+          vehicle.id,
+          knotsToKmh(position.speed),
+          finalLat,
+          finalLng
+        );
+
+        // SSE ile client'a gönder
+        sendSSE("position", {
+          vehicleId: vehicle.id,
+          vehicleName: vehicle.name,
+          lat: finalLat,
+          lng: finalLng,
+          speed: knotsToKmh(position.speed),
+          heading: finalHeading,
+          nearestStopId,
+          status: newStatus,
+          gpsSignal: true, // Position geldi = GPS aktif
+          timestamp: position.serverTime,
+        });
+      }
+
+      // WebSocket bağlantısı kur
+      async function connectWebSocket() {
         if (isClosing) return;
 
         try {
-          // Node.js WebSocket kullan (ws paketi)
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const WebSocket = require("ws");
+          // 1. Token ile session oluştur
+          console.log("[Traccar WS] Token ile session oluşturuluyor...");
+          const sessionRes = await fetch(
+            `${TRACCAR_URL}/api/session?token=${encodeURIComponent(
+              TRACCAR_TOKEN
+            )}`
+          );
 
+          if (!sessionRes.ok) {
+            throw new Error(`Session failed: ${sessionRes.status}`);
+          }
+
+          // Session cookie'yi al
+          const setCookie = sessionRes.headers.get("set-cookie");
+          let sessionCookie = "";
+          if (setCookie) {
+            const match = setCookie.match(/JSESSIONID=([^;]+)/);
+            if (match) {
+              sessionCookie = match[1];
+            }
+          }
+
+          if (!sessionCookie) {
+            throw new Error("Session cookie alınamadı");
+          }
+
+          console.log(
+            "[Traccar WS] Session oluşturuldu, WebSocket bağlanıyor..."
+          );
+
+          // 2. WebSocket bağlantısı kur
+          const wsUrl = TRACCAR_URL.replace(/^http/, "ws") + "/api/socket";
+
+          // Node.js WebSocket kullan
+          const WebSocket = (await import("ws")).default;
           ws = new WebSocket(wsUrl, {
             headers: {
-              Authorization: `Basic ${auth}`,
+              Cookie: `JSESSIONID=${sessionCookie}`,
             },
-          }) as globalThis.WebSocket;
+          }) as any;
 
           ws.onopen = () => {
-            console.log("[Traccar WS] Connected");
+            console.log("[Traccar WS] Bağlantı kuruldu ✓");
             sendSSE("connected", {
               status: "connected",
+              mode: "websocket",
               timestamp: new Date().toISOString(),
             });
-
-            // Ping interval başlat
-            pingInterval = setInterval(() => {
-              if (ws?.readyState === 1) {
-                // OPEN
-                sendSSE("ping", { timestamp: new Date().toISOString() });
-              }
-            }, 30000);
           };
 
-          ws.onmessage = async (event: MessageEvent) => {
+          ws.onmessage = async (event: any) => {
             try {
-              const data: TraccarWSMessage = JSON.parse(event.data.toString());
+              const data = JSON.parse(
+                typeof event.data === "string"
+                  ? event.data
+                  : event.data.toString()
+              );
 
-              // Position güncellemesi
-              if (data.positions && data.positions.length > 0) {
+              // Debug log
+              console.log("[Traccar WS] Mesaj alındı:", {
+                hasPositions: !!data.positions?.length,
+                hasDevices: !!data.devices?.length,
+                positionCount: data.positions?.length || 0,
+                positions: data.positions?.map((p: any) => ({
+                  deviceId: p.deviceId,
+                  lat: p.latitude,
+                  lng: p.longitude,
+                  speed: p.speed,
+                })),
+              });
+
+              // Araç listesini güncelle (yeni eşleştirmeler için)
+              vehicles = await db.select().from(schema.vehicles);
+              vehicleMap = new Map(
+                vehicles
+                  .filter((v) => v.traccarId)
+                  .map((v) => [v.traccarId!, v])
+              );
+
+              // Positions
+              if (data.positions && Array.isArray(data.positions)) {
                 for (const position of data.positions) {
-                  if (!position.valid) continue;
-
-                  const vehicle = vehicleMap.get(position.deviceId);
-                  if (!vehicle) continue;
-
-                  // GPS Düzeltme
-                  let finalLat = position.latitude;
-                  let finalLng = position.longitude;
-                  let finalHeading = position.course;
-
-                  const correction = fullCorrection(
-                    position.longitude,
-                    position.latitude,
-                    stopsForCorrection,
-                    { stopSnapRadius: 15, routeMaxDistance: 40 }
+                  const device = data.devices?.find(
+                    (d: any) => d.id === position.deviceId
                   );
-
-                  finalLat = correction.lat;
-                  finalLng = correction.lng;
-
-                  if (correction.correctionType !== "none") {
-                    finalHeading = correctHeading(
-                      finalLng,
-                      finalLat,
-                      position.course
-                    );
-                  }
-
-                  // En yakın durağı bul
-                  let nearestStopId: number | null = null;
-                  let nearestStopDistance = Infinity;
-
-                  for (const stop of stops) {
-                    const distance = calculateDistance(
-                      { lat: finalLat, lng: finalLng },
-                      { lat: stop.lat, lng: stop.lng }
-                    );
-                    const geofenceRadius = stop.geofenceRadius || 15;
-
-                    if (
-                      distance <= geofenceRadius &&
-                      distance < nearestStopDistance
-                    ) {
-                      nearestStopId = stop.id;
-                      nearestStopDistance = distance;
-                    }
-                  }
-
-                  // Durak giriş/çıkış kontrolü (Stop Visits)
-                  const previousStopId = vehicle.lastGeofenceStopId;
-
-                  // Durağa giriş: önceki durak yoktu veya farklıydı, şimdi bir durağa girdik
-                  if (nearestStopId && nearestStopId !== previousStopId) {
-                    // Önceki duraktan çıkış kaydı
-                    if (previousStopId) {
-                      await recordStopExit(vehicle.id, previousStopId);
-                    }
-                    // Yeni durağa giriş kaydı
-                    await recordStopEnter(vehicle.id, nearestStopId);
-
-                    sendSSE("stopVisit", {
-                      vehicleId: vehicle.id,
-                      vehicleName: vehicle.name,
-                      type: "enter",
-                      stopId: nearestStopId,
-                      timestamp: new Date().toISOString(),
-                    });
-                  }
-                  // Duraktan çıkış: önceki durak vardı, şimdi yok
-                  else if (!nearestStopId && previousStopId) {
-                    await recordStopExit(vehicle.id, previousStopId);
-
-                    sendSSE("stopVisit", {
-                      vehicleId: vehicle.id,
-                      vehicleName: vehicle.name,
-                      type: "exit",
-                      stopId: previousStopId,
-                      timestamp: new Date().toISOString(),
-                    });
-                  }
-
-                  // vehicleMap'i güncelle (sonraki kontroller için)
-                  vehicleMap.set(position.deviceId, {
-                    ...vehicle,
-                    lastGeofenceStopId: nearestStopId,
-                  });
-
-                  // Veritabanını güncelle
-                  await db
-                    .update(schema.vehicles)
-                    .set({
-                      lat: finalLat,
-                      lng: finalLng,
-                      speed: knotsToKmh(position.speed),
-                      heading: finalHeading,
-                      gpsSignal: true,
-                      lastUpdate: new Date(position.serverTime),
-                      lastTraccarUpdate: new Date(),
-                      lastGeofenceStopId: nearestStopId,
-                      updatedAt: new Date(),
-                    })
-                    .where(eq(schema.vehicles.id, vehicle.id));
-
-                  // Trip istatistiklerini güncelle (aktif trip varsa)
-                  await updateTripStats(
-                    vehicle.id,
-                    knotsToKmh(position.speed),
-                    finalLat,
-                    finalLng
-                  );
-
-                  // SSE ile client'a gönder
-                  sendSSE("position", {
-                    vehicleId: vehicle.id,
-                    vehicleName: vehicle.name,
-                    lat: finalLat,
-                    lng: finalLng,
-                    speed: knotsToKmh(position.speed),
-                    heading: finalHeading,
-                    nearestStopId,
-                    timestamp: position.serverTime,
-                  });
+                  await processPosition(position, device);
                 }
               }
 
-              // Device status güncellemesi
-              if (data.devices && data.devices.length > 0) {
+              // Devices (status güncellemeleri)
+              // NOT: Sadece "online" veya "offline" durumlarını işle, "unknown" durumunu atla
+              if (data.devices && Array.isArray(data.devices)) {
                 for (const device of data.devices) {
                   const vehicle = vehicleMap.get(device.id);
                   if (!vehicle) continue;
 
-                  // Güncel araç durumunu veritabanından çek
-                  const [currentVehicle] = await db
-                    .select()
-                    .from(schema.vehicles)
-                    .where(eq(schema.vehicles.id, vehicle.id));
+                  // "unknown" durumunu atla - bu geçici bir durum
+                  if (device.status === "unknown") continue;
 
-                  if (!currentVehicle) continue;
+                  const isOnline = device.status === "online";
 
-                  // Durum belirleme mantığı:
-                  // - Cihaz online ve araç offline ise → available yap
-                  // - Cihaz offline ise → offline yap
-                  // - Diğer durumlarda mevcut durumu koru (busy, maintenance vb.)
-                  let newStatus = currentVehicle.status;
+                  // Sadece gerçek değişiklik varsa güncelle
+                  if (vehicle.gpsSignal !== isOnline) {
+                    sendSSE("device", {
+                      vehicleId: vehicle.id,
+                      vehicleName: vehicle.name,
+                      deviceStatus: device.status,
+                      isOnline,
+                      timestamp: new Date().toISOString(),
+                    });
 
-                  if (device.status === "online") {
-                    // Cihaz çevrimiçi oldu
-                    if (currentVehicle.status === "offline") {
-                      newStatus = "available";
-                    }
-                    // busy veya maintenance ise değiştirme
-                  } else {
-                    // Cihaz çevrimdışı oldu
-                    newStatus = "offline";
+                    // DB güncelle
+                    await db
+                      .update(schema.vehicles)
+                      .set({
+                        gpsSignal: isOnline,
+                        status: isOnline
+                          ? vehicle.status === "offline"
+                            ? "available"
+                            : vehicle.status
+                          : "offline",
+                        updatedAt: new Date(),
+                      })
+                      .where(eq(schema.vehicles.id, vehicle.id));
                   }
-
-                  await db
-                    .update(schema.vehicles)
-                    .set({
-                      status: newStatus,
-                      gpsSignal: device.status === "online",
-                      updatedAt: new Date(),
-                    })
-                    .where(eq(schema.vehicles.id, vehicle.id));
-
-                  // vehicleMap'i de güncelle (sonraki güncellemeler için)
-                  vehicleMap.set(device.id, {
-                    ...currentVehicle,
-                    status: newStatus,
-                  });
-
-                  sendSSE("device", {
-                    vehicleId: vehicle.id,
-                    vehicleName: vehicle.name,
-                    status: newStatus,
-                    deviceStatus: device.status,
-                    previousStatus: currentVehicle.status,
-                  });
                 }
               }
 
-              // Event güncellemesi (geofence enter/exit vb.)
-              if (data.events && data.events.length > 0) {
+              // Events
+              if (data.events && Array.isArray(data.events)) {
                 for (const event of data.events) {
                   const vehicle = vehicleMap.get(event.deviceId);
                   if (!vehicle) continue;
 
-                  // Geofence event'lerini işle
-                  if (
-                    event.geofenceId &&
-                    (event.type === "geofenceEnter" ||
-                      event.type === "geofenceExit")
-                  ) {
-                    const eventType =
-                      event.type === "geofenceEnter" ? "enter" : "exit";
-
-                    // Geofence event'ini veritabanına kaydet
-                    // NOT: Traccar geofence ID'si ile Buggy Shuttle stop ID'si farklı
-                    // Bu yüzden şimdilik sadece SSE ile client'a gönderiyoruz
-
-                    sendSSE("geofence", {
-                      vehicleId: vehicle.id,
-                      vehicleName: vehicle.name,
-                      type: eventType,
-                      traccarGeofenceId: event.geofenceId,
-                      eventType: event.type,
-                      timestamp: new Date().toISOString(),
-                    });
-
-                    console.log(
-                      `[Traccar Event] ${vehicle.name} - ${event.type} - Geofence: ${event.geofenceId}`
-                    );
-                  }
-
-                  // Diğer event tipleri
-                  if (
-                    event.type === "deviceMoving" ||
-                    event.type === "deviceStopped"
-                  ) {
-                    // Trip Detection (Phase 2)
-                    const [currentVehicle] = await db
-                      .select()
-                      .from(schema.vehicles)
-                      .where(eq(schema.vehicles.id, vehicle.id));
-
-                    if (currentVehicle) {
-                      if (event.type === "deviceMoving") {
-                        // Trip başlat
-                        const tripId = await startTrip({
-                          vehicleId: vehicle.id,
-                          lat: currentVehicle.lat,
-                          lng: currentVehicle.lng,
-                          timestamp: new Date(),
-                          stopId:
-                            currentVehicle.lastGeofenceStopId || undefined,
-                        });
-                        console.log(
-                          `[Trip] Started trip ${tripId} for ${vehicle.name}`
-                        );
-                      } else {
-                        // Trip bitir
-                        await endTrip({
-                          vehicleId: vehicle.id,
-                          lat: currentVehicle.lat,
-                          lng: currentVehicle.lng,
-                          timestamp: new Date(),
-                          stopId:
-                            currentVehicle.lastGeofenceStopId || undefined,
-                        });
-                        console.log(`[Trip] Ended trip for ${vehicle.name}`);
-                      }
-                    }
-
-                    sendSSE("movement", {
-                      vehicleId: vehicle.id,
-                      vehicleName: vehicle.name,
-                      type: event.type,
-                      isMoving: event.type === "deviceMoving",
-                      timestamp: new Date().toISOString(),
-                    });
-                  }
-
-                  if (
-                    event.type === "deviceOnline" ||
-                    event.type === "deviceOffline"
-                  ) {
-                    sendSSE("connection", {
-                      vehicleId: vehicle.id,
-                      vehicleName: vehicle.name,
-                      type: event.type,
-                      isOnline: event.type === "deviceOnline",
-                      timestamp: new Date().toISOString(),
-                    });
-                  }
-
-                  // Genel event (tüm event tipleri için)
                   sendSSE("event", {
                     vehicleId: vehicle.id,
                     vehicleName: vehicle.name,
-                    type: event.type,
+                    eventType: event.type,
                     geofenceId: event.geofenceId,
-                    positionId: event.positionId,
-                    timestamp: new Date().toISOString(),
+                    timestamp: event.eventTime,
                   });
                 }
               }
-            } catch (e) {
-              console.error("[Traccar WS] Parse error:", e);
+            } catch (err) {
+              console.error("[Traccar WS] Message parse error:", err);
             }
           };
 
-          ws.onerror = (error: Event) => {
-            console.error("[Traccar WS] Error:", error);
-            sendSSE("error", { message: "WebSocket error" });
+          ws.onerror = (error: any) => {
+            console.error("[Traccar WS] Hata:", error.message || error);
+            sendSSE("error", {
+              message: "WebSocket error",
+              timestamp: new Date().toISOString(),
+            });
           };
 
           ws.onclose = () => {
-            console.log("[Traccar WS] Disconnected");
-            if (pingInterval) clearInterval(pingInterval);
+            console.log("[Traccar WS] Bağlantı kapandı");
+            ws = null;
 
             if (!isClosing) {
-              sendSSE("disconnected", { status: "disconnected" });
-              // 5 saniye sonra yeniden bağlan
-              reconnectTimeout = setTimeout(connect, 5000);
+              sendSSE("disconnected", {
+                status: "disconnected",
+                timestamp: new Date().toISOString(),
+              });
+
+              // Yeniden bağlan
+              reconnectTimeout = setTimeout(() => {
+                console.log("[Traccar WS] Yeniden bağlanılıyor...");
+                connectWebSocket();
+              }, RECONNECT_DELAY);
             }
           };
-        } catch (e) {
-          console.error("[Traccar WS] Connection error:", e);
-          sendSSE("error", { message: "Connection failed" });
+        } catch (error) {
+          console.error("[Traccar WS] Bağlantı hatası:", error);
+          sendSSE("error", {
+            message: String(error),
+            timestamp: new Date().toISOString(),
+          });
 
+          // Yeniden dene
           if (!isClosing) {
-            reconnectTimeout = setTimeout(connect, 5000);
+            reconnectTimeout = setTimeout(connectWebSocket, RECONNECT_DELAY);
           }
         }
       }
 
-      // İlk bağlantı
-      connect();
+      // Ping interval
+      pingInterval = setInterval(() => {
+        sendSSE("ping", { timestamp: new Date().toISOString() });
+      }, PING_INTERVAL);
+
+      // WebSocket bağlantısını başlat
+      await connectWebSocket();
 
       // Client bağlantısı kesildiğinde temizlik
       request.signal.addEventListener("abort", () => {
+        console.log("[Traccar Stream] Client bağlantısı kesildi");
         isClosing = true;
-        if (pingInterval) clearInterval(pingInterval);
-        if (reconnectTimeout) clearTimeout(reconnectTimeout);
         if (ws) {
           ws.close();
+          ws = null;
         }
-        controller.close();
+        if (pingInterval) clearInterval(pingInterval);
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        try {
+          controller.close();
+        } catch {
+          // Controller zaten kapalı
+        }
       });
     },
   });
@@ -474,7 +429,7 @@ export const GET: RequestHandler = async ({ request }) => {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
-      "X-Accel-Buffering": "no", // Nginx buffering'i kapat
+      "X-Accel-Buffering": "no",
     },
   });
 };
