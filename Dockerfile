@@ -8,12 +8,17 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies first (better caching)
 COPY package*.json ./
-RUN npm ci
+
+# Clean install with legacy peer deps support
+RUN npm ci --legacy-peer-deps
 
 # Copy source code
 COPY . .
+
+# Clear any cached build artifacts
+RUN rm -rf .svelte-kit build
 
 # Build the application
 RUN npm run build
