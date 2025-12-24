@@ -8,6 +8,18 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Install build dependencies for canvas (native module)
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    cairo-dev \
+    pango-dev \
+    jpeg-dev \
+    giflib-dev \
+    librsvg-dev \
+    pixman-dev
+
 # Install dependencies first (better caching)
 COPY package*.json ./
 
@@ -33,6 +45,15 @@ RUN npm prune --production
 FROM node:20-alpine AS production
 
 WORKDIR /app
+
+# Install runtime dependencies for canvas
+RUN apk add --no-cache \
+    cairo \
+    pango \
+    jpeg \
+    giflib \
+    librsvg \
+    pixman
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
