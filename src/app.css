@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-primary: #14b8a6;
+  --color-secondary: #ff6b9d;
+  --color-dark: #0f172a;
+}
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    sans-serif;
+  background-color: #0f172a;
+  color: #f1f5f9;
+}
+
+/* Custom utilities */
+@layer utilities {
+  .bg-dark-750 {
+    background-color: #1a2744;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Leaflet overrides */
+.leaflet-container {
+  background: #0f172a;
+}
+
+.leaflet-popup-content-wrapper {
+  background: #1e293b;
+  color: #f1f5f9;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.leaflet-popup-tip {
+  background: #1e293b;
+}
+
+.leaflet-popup-close-button {
+  color: #94a3b8 !important;
+}
+
+.leaflet-control-layers {
+  background: #1e293b !important;
+  border: 1px solid #334155 !important;
+  border-radius: 8px !important;
+  color: #f1f5f9 !important;
+}
+
+.leaflet-control-layers label {
+  color: #cbd5e1 !important;
+}
+
+/* Animations */
+@keyframes pulse-slow {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 2s ease-in-out infinite;
+}

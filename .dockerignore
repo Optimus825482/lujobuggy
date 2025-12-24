@@ -1,0 +1,44 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build outputs
+build
+.svelte-kit
+
+# Development
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test
+coverage
+.nyc_output
+
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Scripts (not needed in production)
+scripts/
+
+# Drizzle studio
+drizzle/*.json

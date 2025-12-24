@@ -1,0 +1,47 @@
+{
+  "name": "buggy-shuttle",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:studio": "drizzle-kit studio"
+  },
+  "devDependencies": {
+    "@iconify-json/heroicons": "^1.2.3",
+    "@iconify-json/lucide": "^1.2.82",
+    "@iconify-json/mdi": "^1.2.3",
+    "@iconify/tailwind": "^1.2.0",
+    "@sveltejs/adapter-auto": "^7.0.0",
+    "@sveltejs/adapter-node": "^5.0.0",
+    "@sveltejs/kit": "^2.49.1",
+    "@sveltejs/vite-plugin-svelte": "^6.2.1",
+    "@types/node": "^22.0.0",
+    "autoprefixer": "^10.4.20",
+    "drizzle-kit": "^0.31.8",
+    "postcss": "^8.5.0",
+    "sharp": "^0.34.5",
+    "svelte": "^5.45.6",
+    "svelte-check": "^4.3.4",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.1",
+    "maplibre-gl": "^5.15.0",
+    "postgres": "^3.4.7",
+    "socket.io-client": "^4.8.1",
+    "svelte-maplibre": "^1.2.5"
+  }
+}
