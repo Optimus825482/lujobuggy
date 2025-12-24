@@ -22,7 +22,7 @@ services:
       GEOFENCE_DEFAULT_RADIUS: ${GEOFENCE_DEFAULT_RADIUS:-15}
       GPS_UPDATE_INTERVAL: ${GPS_UPDATE_INTERVAL:-10000}
     expose:
-      - "3000"
+      - "3002"
     networks:
       - coolify
     labels:
@@ -35,7 +35,7 @@ services:
       - "traefik.http.routers.lujo-https.tls=true"
       - "traefik.http.routers.lujo-https.tls.certresolver=letsencrypt"
       - "traefik.http.middlewares.lujo-redirect.redirectscheme.scheme=https"
-      - "traefik.http.services.lujo-service.loadbalancer.server.port=3000"
+      - "traefik.http.services.lujo-service.loadbalancer.server.port=3002"
     deploy:
       resources:
         limits:

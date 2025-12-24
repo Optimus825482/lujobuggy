@@ -48,18 +48,18 @@ COPY --from=builder --chown=sveltekit:nodejs /app/static ./static
 
 # Set environment
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=3002
 ENV HOST=0.0.0.0
 
 # Switch to non-root user
 USER sveltekit
 
 # Expose port
-EXPOSE 3000
+EXPOSE 3002
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3002/ || exit 1
 
 # Start the application
 CMD ["node", "build"]
